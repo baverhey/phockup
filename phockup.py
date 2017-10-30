@@ -8,11 +8,11 @@ import re
 from datetime import datetime
 from subprocess import check_output, CalledProcessError
 
-version = '1.4.0'
+version = '1.4.0_bart'
 
 
 def main(argv):
-    check_dependencies()
+    # check_dependencies()
 
     move_files = False
     date_regex = None
@@ -72,12 +72,6 @@ def main(argv):
                 sys.exit(0)
 
 
-def check_dependencies():
-    if shutil.which('exiftool') is None:
-        print('Exiftool is not installed. Visit http://www.sno.phy.queensu.ca/~phil/exiftool/')
-        sys.exit(2)
-
-
 def parse_date_format(date):
     date = date.replace("YYYY", "%Y")  # 2017 (year)
     date = date.replace("YY", "%y")    # 17 (year)
@@ -91,79 +85,33 @@ def parse_date_format(date):
     return date
 
 
-def exif(file):
-    try:
-        data = check_output(['exiftool', file]).decode('UTF-8').strip().split("\\n")[0].split("\n")
-        exif_data = {}
-    except (CalledProcessError, UnicodeDecodeError):
-        return None
+def get_date(file, user_regex=None):
 
-    for row in data:
-        opt = row.split(":")
-        exif_data[opt[0].strip()] = ":".join(opt[1:]).strip()
+    # For this use a user provided regex if possible.
+    # Otherwise assume a filename such as IMG_20160915_123456.jpg as default.
+    default_regex = re.compile('.*[_-](?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})[_-]?(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})')
+    # default regex for foscam cameras
+    # default_regex = re.compile('[0-9]{6}[_-][0-9]{6}')
 
-    return exif_data
+    regex = user_regex or default_regex
+    matches = regex.search(os.path.basename(file))
 
-
-def get_date(file, exif_data, user_regex=None):
-    keys = ['Create Date', 'Date/Time Original']
-
-    datestr = None
-
-    for key in keys:
-        if key in exif_data:
-            datestr = exif_data[key]
-            break
-
-    if datestr:
-        datestr = datestr.split('.')
-        date = datestr[0]
-
-        if len(datestr) > 1:
-            subseconds = datestr[1]
-        else:
-            subseconds = ''
-
-        search = r'(.*)([+-]\d{2}:\d{2})'
-        if re.search(search, date) is not None:
-            date = re.sub(search, r'\1', date)
-
+    if matches:
         try:
-            parsed_date_time = datetime.strptime(date, "%Y:%m:%d %H:%M:%S")
-        except ValueError:
-            try:
-                parsed_date_time = datetime.strptime(date, "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                parsed_date_time = None
+            match_dir = matches.groupdict()
+            match_dir = dict([a, int(x)] for a, x in match_dir.items()) #Convert str to int
+            date = datetime(
+                match_dir["year"], match_dir["month"], match_dir["day"],
+                match_dir["hour"], match_dir["minute"], match_dir["second"]
+            )
+        except (KeyError, ValueError):
+            date = None
 
-        return {
-            'date': parsed_date_time,
-            'subseconds': subseconds
-        }
-    else:
-        # If missing datetime from EXIF data check if filename is in datetime format.
-        # For this use a user provided regex if possible.
-        # Otherwise assume a filename such as IMG_20160915_123456.jpg as default.
-        default_regex = re.compile('.*[_-](?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})[_-]?(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})')
-        regex = user_regex or default_regex
-        matches = regex.search(os.path.basename(file))
-
-        if matches:
-            try:
-                match_dir = matches.groupdict()
-                match_dir = dict([a, int(x)] for a, x in match_dir.items()) #Convert str to int
-                date = datetime(
-                    match_dir["year"], match_dir["month"], match_dir["day"],
-                    match_dir["hour"], match_dir["minute"], match_dir["second"]
-                )
-            except (KeyError, ValueError):
-                date = None
-
-            if date:
-                return {
-                    'date': date,
-                    'subseconds': ''
-                }
+        if date:
+            return {
+                'date': date,
+                'subseconds': ''
+            }
 
 
 def get_output_dir(date, outputdir, dir_format):
@@ -215,30 +163,15 @@ def get_file_name(file, date):
         return os.path.basename(file)
 
 
-def is_image_or_video(exif_data):
-    pattern = re.compile('^(image/.+|video/.+|application/vnd.adobe.photoshop)$')
-    if pattern.match(exif_data['MIME Type']):
-        return True
-    return False
-
-
 def handle_file(source_file, outputdir, dir_format, move_files, date_regex=None):
-    if str.endswith(source_file, '.xmp'):
-        return None
 
     print(source_file, end="", flush=True)
 
-    exif_data = exif(source_file)
+    date = get_date(source_file, date_regex)
 
-    if exif_data and is_image_or_video(exif_data):
-        date = get_date(source_file, exif_data, date_regex)
-        output_dir = get_output_dir(date, outputdir, dir_format)
-        target_file_name = get_file_name(source_file, date).lower()
-        target_file_path = os.path.sep.join([output_dir, target_file_name])
-    else:
-        output_dir = get_output_dir(False, outputdir, dir_format)
-        target_file_name = os.path.basename(source_file)
-        target_file_path = os.path.sep.join([output_dir, target_file_name])
+    output_dir = get_output_dir(date, outputdir, dir_format)
+    target_file_name = os.path.basename(source_file)
+    target_file_path = os.path.sep.join([output_dir, target_file_name])
 
     suffix = 1
     target_file = target_file_path
@@ -254,38 +187,12 @@ def handle_file(source_file, outputdir, dir_format, move_files, date_regex=None)
                 shutil.copy2(source_file, target_file)
 
             print(' => %s' % target_file)
-            handle_file_xmp(source_file, target_file_name, suffix, output_dir, move_files)
+            # handle_file_xmp(source_file, target_file_name, suffix, output_dir, move_files)
             break
 
         suffix += 1
         target_split = os.path.splitext(target_file_path)
         target_file = "%s-%d%s" % (target_split[0], suffix, target_split[1])
-
-
-def handle_file_xmp(source_file, photo_name, suffix, exif_output_dir, move_files):
-    xmp_original_with_ext = source_file + '.xmp'
-    xmp_original_without_ext = os.path.splitext(source_file)[0] + '.xmp'
-
-    suffix = '-%s' % suffix if suffix > 1 else ''
-
-    if os.path.isfile(xmp_original_with_ext):
-        xmp_original = xmp_original_with_ext
-        xmp_target = '%s%s.xmp' % (photo_name, suffix)
-    elif os.path.isfile(xmp_original_without_ext):
-        xmp_original = xmp_original_without_ext
-        xmp_target = '%s%s.xmp' % (os.path.splitext(photo_name)[0], suffix)
-    else:
-        xmp_original = None
-        xmp_target = None
-
-    if xmp_original:
-        xmp_path = os.path.sep.join([exif_output_dir, xmp_target])
-        print('%s => %s' % (xmp_original, xmp_path))
-
-        if move_files:
-            shutil.move(xmp_original, xmp_path)
-        else:
-            shutil.copy2(xmp_original, xmp_path)
 
 
 def sha256_checksum(filename, block_size=65536):
